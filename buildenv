@@ -1,0 +1,187 @@
+# bump: pydantic-core-version /PYDANTIC_CORE_VERSION="(.*)"/ https://github.com/pydantic/pydantic-core.git|semver:*
+PYDANTIC_CORE_VERSION="2.41.5"
+
+###
+### Build control file for the python-pydantic-coreport port
+###
+### pydantic-core is a Rust extension and cannot be compiled natively on z/OS
+### (no native Rust toolchain).  Prebuilt wheels are cross-compiled from
+### Linux-on-Power (LoP, ppc64le) using the IBM Rust cross-compiler for
+### s390x-ibm-zos and uploaded as release assets on this port's GitHub repo.
+### The build step here fetches those assets, verifies them, and lets the
+### standard Python build system stage them for the wheel index.
+###
+### Cross-compilation infrastructure:
+###   https://github.ibm.com/compiler/rust-scripts  branch itodorov/zos-cross-compile-setup
+###
+### Note: pydantic-core 2.41.5 is the newest release buildable with rustc 1.86;
+### the toolchain must be updated to >=1.88 before newer versions can be used.
+###
+
+export ZOPEN_PROJECT_NAME="python-pydantic-core"
+export ZOPEN_BUILD_LINE="STABLE"
+export ZOPEN_STABLE_URL="https://github.com/pydantic/pydantic-core.git"
+export ZOPEN_STABLE_TAG="v${PYDANTIC_CORE_VERSION}"
+export ZOPEN_STABLE_DEPS="check_python grep curl"
+export ZOPEN_DEV_URL=""
+export ZOPEN_DEV_DEPS="check_python grep curl"
+export ZOPEN_CATEGORIES="development library"
+export ZOPEN_RUNTIME_DEPS="check_python"
+
+### Build settings
+###
+### ZOPEN_BUILD_SYSTEM=Python keeps the standard loop over interpreters and
+### the _zopen_python_install path that stages wheels in install/dist/ for the
+### wheel index.  We replace only the compile step (ZOPEN_MAKE) because there
+### is nothing to compile here: the prebuilt wheels already exist.
+export ZOPEN_BUILD_SYSTEM="Python"
+export ZOPEN_COMP="skip"
+
+### The prebuilt wheels are hosted as release assets on the port repo.
+### One asset per Python version, named with the full wheel tag so pip can
+### match them without a --platform override:
+###   pydantic_core-2.41.5-cp312-none-any.whl
+###   pydantic_core-2.41.5-cp313-none-any.whl
+###   pydantic_core-2.41.5-cp314-none-any.whl
+###
+### They are already retagged to cpXY-none-any (z/OS platform suffix stripped)
+### by the cross-compile side using build_zos_wheel.py + `python -m wheel tags`.
+### Set ZOPEN_PYTHON_WHEEL_RETAG=false so the Python build system does not try
+### to retag them a second time.
+export ZOPEN_PYTHON_WHEEL_RETAG="false"
+export _PYDANTIC_CORE_RELEASE_BASE="https://github.com/zopencommunity/python-pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}"
+
+zopen_get_version() {
+  echo "${PYDANTIC_CORE_VERSION}"
+}
+
+### zopen_init: called after source checkout, before the build step.
+### Fetch one prebuilt wheel per available interpreter into dist/ so the
+### standard Python build system can find them.  The build step then becomes a
+### no-op (ZOPEN_MAKE overridden to just verify dist/ is populated).
+zopen_init() {
+  mkdir -p dist
+
+  for _pv in $(_zopen_python_versions); do
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
+    _wheel="pydantic_core-${PYDANTIC_CORE_VERSION}-${_tag}-none-any.whl"
+    _url="${_PYDANTIC_CORE_RELEASE_BASE}/${_wheel}"
+
+    printInfo "Fetching ${_wheel}"
+    if ! curl -fsSL -o "dist/${_wheel}" "${_url}"; then
+      printError "Failed to download ${_wheel} from ${_url}"
+      printError "Build the wheel with build_zos_wheel.py on LoP and upload it as a release asset"
+      return 1
+    fi
+    printInfo "Downloaded dist/${_wheel}"
+  done
+}
+
+### Replace the compile step: nothing to build, just confirm dist/ has a wheel
+### for every declared interpreter.
+ZOPEN_MAKE="zopen_verify_wheels"
+zopen_verify_wheels() {
+  _missing=""
+  for _pv in $(_zopen_python_versions); do
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
+    _found=false
+    for _whl in dist/*-"${_tag}"-none-any.whl dist/*-"${_tag}"-*-*.whl; do
+      [ -f "${_whl}" ] && { _found=true; break; }
+    done
+    ${_found} || _missing="${_missing} ${_pv}"
+  done
+  if [ -n "${_missing}" ]; then
+    printError "Missing prebuilt wheel(s) for Python:${_missing}"
+    return 1
+  fi
+  printInfo "All prebuilt wheels present in dist/"
+}
+
+### zopen_python_test: called once per interpreter with that interpreter's
+### venv active and its wheel already installed.  Run a self-contained import
+### and validation smoke test; avoid the full upstream test suite which needs
+### hypothesis and other heavy deps.
+zopen_python_test() {
+  python - <<'PYEOF'
+import sys
+
+# Verify the extension itself loaded (an unimportable .so would have aborted
+# pip install above, but be explicit so the failure message is clear)
+try:
+    import pydantic_core
+    from pydantic_core import SchemaValidator, core_schema
+except ImportError as exc:
+    print("FAIL: import pydantic_core -", exc, file=sys.stderr)
+    sys.exit(1)
+
+failures = 0
+
+def check(label, expr):
+    global failures
+    if not expr:
+        print("FAIL:", label, file=sys.stderr)
+        failures += 1
+    else:
+        print("PASS:", label)
+
+# str schema
+v = SchemaValidator(core_schema.str_schema())
+check("str validate_python", v.validate_python("hello") == "hello")
+check("str validate_json",   v.validate_json('"world"') == "world")
+
+# int schema
+v2 = SchemaValidator(core_schema.int_schema())
+check("int validate_python", v2.validate_python(42) == 42)
+
+# validation error raised correctly
+try:
+    v2.validate_python("not-an-int")
+    check("ValidationError raised", False)
+except pydantic_core.ValidationError:
+    check("ValidationError raised", True)
+
+# nested model via dataclass-style dict schema
+person = SchemaValidator(core_schema.typed_dict_schema({
+    "name": core_schema.typed_dict_field(core_schema.str_schema()),
+    "age":  core_schema.typed_dict_field(core_schema.int_schema()),
+}))
+result = person.validate_python({"name": "z/OS", "age": 1})
+check("typed_dict name", result["name"] == "z/OS")
+check("typed_dict age",  result["age"]  == 1)
+
+print()
+print("pydantic_core", pydantic_core.__version__,
+      "on Python", sys.version.split()[0],
+      "- %d passed, %d failed" % (5 - failures, failures))
+
+sys.exit(failures)
+PYEOF
+}
+
+### zopen_check_results: aggregate pytest-style counts from zopen_python_test
+### output across all interpreters.  Also detect an interpreter that ran but
+### produced no counts (e.g. wheel imported but the test script crashed before
+### printing) as a failure, since a silent crash must not read as success.
+zopen_check_results() {
+  dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
+
+  # Count PASS/FAIL lines written by the test script
+  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null || echo 0)
+  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null || echo 0)
+  total=$((passed + failed))
+
+  # Each interpreter should have run at least one test.  Count how many
+  # interpreter headers appeared (zopen-build prints "Running tests with
+  # Python X.Y" before each run) and how many produced output.
+  interpreters=$(grep -c "Running tests with Python" "${chk}" 2>/dev/null || echo 0)
+  interpreters_with_output=$(grep -c "pydantic_core.*passed" "${chk}" 2>/dev/null || echo 0)
+  silent=$((interpreters - interpreters_with_output))
+  if [ "${silent}" -gt 0 ]; then
+    failed=$((failed + silent))
+    total=$((total + silent))
+  fi
+
+  echo "actualFailures:${failed}"
+  echo "totalTests:${total}"
+  echo "expectedFailures:0"
+}

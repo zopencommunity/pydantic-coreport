@@ -1,0 +1,10 @@
+log/
+log.DEV/
+log.STABLE/
+build/
+install/
+.zoslib_hooks/
+
+# Ignore source directories created by zopen-build
+pydantic-core-*/
+pydantic-core/
