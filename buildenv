@@ -37,19 +37,26 @@ zopen_get_version() {
 }
 
 zopen_init() {
-  # Determine the cpXY tag for the active Python interpreter
-  _py=$( (check_python --version 2>&1 || python3 --version 2>&1) | \
-         grep -oE '[0-9]+\.[0-9]+' | head -1 | tr -d '.')
+  # Ask the interpreter for its own tag rather than parsing --version: z/OS
+  # grep has no -o (FSUMA930), and grep is only pulled in implicitly for the
+  # Python build system, which this port does not use. Parsing would also have
+  # to cope with IBM's banner, "IBM Open Enterprise SDK for Python 3.12.13".
+  _py=$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])') || return 1
   _wheel="pydantic_core-${PYDANTIC_CORE_VERSION}-cp${_py}-none-any.whl"
   _url="https://github.com/zopencommunity/pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}/${_wheel}"
 
   printInfo "Downloading ${_wheel}"
   curl -fsSL -o "${_wheel}" "${_url}" || {
     printError "Failed to download ${_wheel}"
-    printError "Build the wheel on LoP with build_zos_wheel.py and upload as a release asset."
+    printError "Only cp312 is published today: pydantic-core has no abi3 build, so"
+    printError "one .so cannot serve several interpreters and each needs its own"
+    printError "cross-compile. Build it on LoP with build_zos_wheel.py and attach"
+    printError "it to the v${PYDANTIC_CORE_VERSION} release."
     return 1
   }
-  chtag -t -c ISO8859-1 "${_wheel}" 2>/dev/null || true
+  # A wheel is a zip. Tagging it as ISO8859-1 text invites conversion on read;
+  # fdport marks its downloaded artifact binary for the same reason.
+  chtag -b "${_wheel}" 2>/dev/null || true
 }
 
 zopen_custom_check() {
@@ -123,11 +130,27 @@ zopen_custom_install() {
   mkdir -p "${ZOPEN_INSTALL_DIR}/lib/python"
   python3 -m pip install --quiet --no-deps --target="${ZOPEN_INSTALL_DIR}/lib/python" "${_wheel}"
 
-  # Stage the wheel for the zopen wheel index
-  mkdir -p "${ZOPEN_INSTALL_DIR}/dist"
-  cp "${_wheel}" "${ZOPEN_INSTALL_DIR}/dist/"
+  # Stage the wheel for the zopen wheel index, in the port's artifact directory
+  # next to the pax and metadata.json -- which is where CI looks
+  # (install/dist/*.whl). It must NOT go under ZOPEN_INSTALL_DIR: that tree is
+  # what gets packaged, so a wheel there ships a second copy of everything
+  # already under lib/python and is invisible to CI, which is what
+  # zopen-build's own _zopen_python_install warns about.
+  mkdir -p "${ZOPEN_ROOT}/install/dist"
+  cp "${_wheel}" "${ZOPEN_ROOT}/install/dist/"
 
   printInfo "Installed pydantic_core ${PYDANTIC_CORE_VERSION} from ${_wheel}"
+}
+
+# Without ZOPEN_BUILD_SYSTEM="Python" nothing adds lib/python to PYTHONPATH --
+# zopen-build only supplies that .env snippet for Python-build-system ports --
+# so the module would be installed and still not importable, and the install
+# validation below would fail.
+zopen_append_to_env() {
+  cat <<ZZ
+PYTHONPATH="\${PYTHONPATH}:\${PWD}/lib/python"
+export PYTHONPATH="\$(deleteDuplicateEntries "\$PYTHONPATH" ":")"
+ZZ
 }
 
 zopen_append_to_validate_install() {
@@ -136,8 +159,14 @@ zopen_append_to_validate_install() {
 
 zopen_check_results() {
   dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
-  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null || echo 0)
-  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null || echo 0)
+  # No "|| echo 0": grep -c already prints 0 when nothing matches, and it also
+  # exits 1, so the fallback appended a second zero and the arithmetic below
+  # died with FSUM9224 bad number "0\n0". That fired on every clean run, since
+  # a clean run has no FAIL: lines at all.
+  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null)
+  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null)
+  passed=${passed:-0}
+  failed=${failed:-0}
   total=$((passed + failed))
   echo "actualFailures:${failed}"
   echo "totalTests:${total}"
