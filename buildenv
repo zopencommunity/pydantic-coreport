@@ -2,7 +2,7 @@
 PYDANTIC_CORE_VERSION="2.41.5"
 
 ###
-### Build control file for the python-pydantic-coreport port
+### Build control file for the pydantic-coreport port
 ###
 ### pydantic-core is a Rust extension and cannot be compiled natively on z/OS
 ### (no native Rust toolchain).  Prebuilt wheels are cross-compiled from
@@ -18,7 +18,7 @@ PYDANTIC_CORE_VERSION="2.41.5"
 ### the toolchain must be updated to >=1.88 before newer versions can be used.
 ###
 
-export ZOPEN_PROJECT_NAME="python-pydantic-core"
+export ZOPEN_PROJECT_NAME="pydantic-core"
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_STABLE_URL="https://github.com/pydantic/pydantic-core.git"
 export ZOPEN_STABLE_TAG="v${PYDANTIC_CORE_VERSION}"
@@ -49,7 +49,7 @@ export ZOPEN_COMP="skip"
 ### Set ZOPEN_PYTHON_WHEEL_RETAG=false so the Python build system does not try
 ### to retag them a second time.
 export ZOPEN_PYTHON_WHEEL_RETAG="false"
-export _PYDANTIC_CORE_RELEASE_BASE="https://github.com/zopencommunity/python-pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}"
+export _PYDANTIC_CORE_RELEASE_BASE="https://github.com/zopencommunity/pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}"
 
 zopen_get_version() {
   echo "${PYDANTIC_CORE_VERSION}"

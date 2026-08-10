@@ -2,11 +2,11 @@ node('linux') {
   stage ('Poll') {
     checkout([
       $class: 'GitSCM', branches: [[name: '*/main']], extensions: [],
-      userRemoteConfigs: [[url: 'https://github.com/zopencommunity/python-pydantic-coreport.git']]])
+      userRemoteConfigs: [[url: 'https://github.com/zopencommunity/pydantic-coreport.git']]])
   }
   stage('Build') {
     build job: 'Port-Pipeline', parameters: [
-      string(name: 'PORT_GITHUB_REPO', value: 'https://github.com/zopencommunity/python-pydantic-coreport.git'),
+      string(name: 'PORT_GITHUB_REPO', value: 'https://github.com/zopencommunity/pydantic-coreport.git'),
       string(name: 'PORT_DESCRIPTION', value: 'Core functionality for Pydantic validation and serialization (Rust extension, cross-compiled for z/OS)'),
       string(name: 'BUILD_LINE', value: 'DEV'),
       booleanParam(name: 'PUBLISH_PYTHON_WHEEL', value: true)
