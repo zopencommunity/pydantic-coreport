@@ -60,8 +60,26 @@ zopen_get_version() {
 ### standard Python build system can find them.  The build step then becomes a
 ### no-op (ZOPEN_MAKE overridden to just verify dist/ is populated).
 zopen_init() {
+  : # nothing to do here; wheel download happens in zopen_verify_wheels (the MAKE step)
+  #   because _zopen_python_build (which we replace) does rm -rf dist first,
+  #   which would wipe anything downloaded here.
+}
+
+### Replace the compile step entirely.
+### _zopen_python_build (the default) does:
+###   1. rm -rf dist          <- would destroy pre-downloaded wheels
+###   2. create venvs per interpreter
+###   3. python -m build --wheel  <- nothing to compile
+### We replace it with zopen_verify_wheels which:
+###   1. downloads the prebuilt wheels into dist/
+###   2. creates venvs per interpreter (required by _zopen_python_check)
+###   3. verifies all wheels are present
+ZOPEN_MAKE="zopen_verify_wheels"
+zopen_verify_wheels() {
+  rm -rf dist
   mkdir -p dist
 
+  # Download one prebuilt wheel per interpreter
   for _pv in $(_zopen_python_versions); do
     _tag="cp$(echo "${_pv}" | tr -d '.')"
     _wheel="pydantic_core-${PYDANTIC_CORE_VERSION}-${_tag}-none-any.whl"
@@ -70,30 +88,18 @@ zopen_init() {
     printInfo "Fetching ${_wheel}"
     if ! curl -fsSL -o "dist/${_wheel}" "${_url}"; then
       printError "Failed to download ${_wheel} from ${_url}"
-      printError "Build the wheel with build_zos_wheel.py on LoP and upload it as a release asset"
+      printError "Build the wheel on LoP with build_zos_wheel.py and upload as release asset"
       return 1
     fi
     printInfo "Downloaded dist/${_wheel}"
-  done
-}
 
-### Replace the compile step: nothing to build, just confirm dist/ has a wheel
-### for every declared interpreter.
-ZOPEN_MAKE="zopen_verify_wheels"
-zopen_verify_wheels() {
-  _missing=""
-  for _pv in $(_zopen_python_versions); do
-    _tag="cp$(echo "${_pv}" | tr -d '.')"
-    _found=false
-    for _whl in dist/*-"${_tag}"-none-any.whl dist/*-"${_tag}"-*-*.whl; do
-      [ -f "${_whl}" ] && { _found=true; break; }
-    done
-    ${_found} || _missing="${_missing} ${_pv}"
+    # Create the per-interpreter venv that _zopen_python_check expects.
+    # Must be done here because we replaced _zopen_python_build which
+    # normally calls _zopen_python_ensure_venv_for for each interpreter.
+    _zopen_python_ensure_venv_for "${_pv}" || return 1
+    deactivate
   done
-  if [ -n "${_missing}" ]; then
-    printError "Missing prebuilt wheel(s) for Python:${_missing}"
-    return 1
-  fi
+
   printInfo "All prebuilt wheels present in dist/"
 }
 
