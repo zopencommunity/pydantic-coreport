@@ -77,7 +77,12 @@ zopen_custom_check() {
   python3 -m venv .check_venv
   . .check_venv/bin/activate
 
-  pip install --quiet --no-deps "${_wheel}"
+  # No --no-deps: the wheel declares Requires-Dist: typing-extensions>=4.14.1,
+  # and pydantic_core imports it at module level, so --no-deps made the very
+  # first smoke check fail with "No module named typing_extensions".
+  # typing-extensions is pure Python with no dependencies of its own, so
+  # letting pip resolve it pulls in exactly one small wheel from PyPI.
+  pip install --quiet "${_wheel}"
 
   python3 - <<'PYEOF'
 import sys
@@ -137,7 +142,11 @@ zopen_custom_install() {
 
   # Install the wheel into the port tree
   mkdir -p "${ZOPEN_INSTALL_DIR}/lib/python"
-  python3 -m pip install --quiet --no-deps --target="${ZOPEN_INSTALL_DIR}/lib/python" "${_wheel}"
+  # No --no-deps here either. zopen-build's Python install path uses it because
+  # it installs only the port's own wheel, but this port has to be usable on its
+  # own: without typing-extensions alongside it, lib/python holds a module that
+  # cannot be imported and zopen_append_to_validate_install below fails.
+  python3 -m pip install --quiet --target="${ZOPEN_INSTALL_DIR}/lib/python" "${_wheel}"
 
   # Stage the wheel for the zopen wheel index, in the port's artifact directory
   # next to the pax and metadata.json -- which is where CI looks
