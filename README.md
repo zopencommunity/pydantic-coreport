@@ -36,16 +36,6 @@ Or via zopen:
 zopen install python-pydantic-core
 ```
 
-## Cross-compilation
-
-Wheels are built on LoP using:
-```sh
-# cross/build_zos_wheel.py in rust-scripts
-python3 cross/build_zos_wheel.py pydantic-core
-```
-
-Source: https://github.ibm.com/compiler/rust-scripts (branch `itodorov/zos-cross-compile-setup`)
-
 ## Note on versions
 
 `pydantic-core 2.41.5` is the newest release buildable with rustc 1.86 (`rust-version = "1.75"`).
