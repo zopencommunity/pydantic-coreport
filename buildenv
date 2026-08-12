@@ -9,8 +9,12 @@ PYDANTIC_CORE_VERSION="2.41.5"
 ### Linux-on-Power (LoP) using IBM's Rust cross-compiler targeting s390x-ibm-zos
 ### and uploaded as release assets on this repo.
 ###
-### Pattern mirrors fdport/ripgrepport: ZOPEN_TYPE=BARE, zopen_init downloads
-### the prebuilt artifact, zopen_custom_install places it.
+### Same BARE arrangement as fdport and cryptographyport. Keeping
+### ZOPEN_BUILD_SYSTEM="Python" matters: it is what stages a wheel per
+### interpreter for the wheel index and runs the check once per interpreter. A
+### cross-compiled binary nobody loaded is the main risk here, so nothing is
+### published until the interpreter it claims to support has actually
+### validated data with it.
 ###
 ### Cross-compilation infrastructure:
 ###   https://github.ibm.com/compiler/rust-scripts  branch itodorov/zos-cross-compile-setup
@@ -36,128 +40,250 @@ export ZOPEN_DEV_DEPS="check_python curl"
 export ZOPEN_CATEGORIES="development library"
 export ZOPEN_RUNTIME_DEPS="check_python"
 
+export ZOPEN_BUILD_SYSTEM="Python"
+export ZOPEN_BOOTSTRAP="skip"
 export ZOPEN_CONFIGURE="skip"
-export ZOPEN_MAKE="skip"
-export ZOPEN_CHECK="zopen_custom_check"
-export ZOPEN_INSTALL="zopen_custom_install"
+export ZOPEN_COMP="skip"
+export ZOPEN_MAKE="zopen_custom_build"
+
+WHEEL_BASE_URL="https://github.com/zopencommunity/pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}"
 
 zopen_get_version() {
   echo "${PYDANTIC_CORE_VERSION}"
 }
 
-zopen_init() {
-  # Ask the interpreter for its own tag rather than parsing --version: z/OS
-  # grep has no -o (FSUMA930), and grep is only pulled in implicitly for the
-  # Python build system, which this port does not use. Parsing would also have
-  # to cope with IBM's banner, "IBM Open Enterprise SDK for Python 3.12.13".
-  _py=$(python3 -c 'import sys; print("%d%d" % sys.version_info[:2])') || return 1
-  _wheel="pydantic_core-${PYDANTIC_CORE_VERSION}-cp${_py}-none-any.whl"
-  _url="https://github.com/zopencommunity/pydantic-coreport/releases/download/v${PYDANTIC_CORE_VERSION}/${_wheel}"
-
-  printInfo "Downloading ${_wheel}"
-  curl -fsSL -o "${_wheel}" "${_url}" || {
-    printError "Failed to download ${_wheel}"
-    printError "Only cp312 is published today: pydantic-core has no abi3 build, so"
-    printError "one .so cannot serve several interpreters and each needs its own"
-    printError "cross-compile. Build it on LoP with build_zos_wheel.py and attach"
-    printError "it to the v${PYDANTIC_CORE_VERSION} release."
-    return 1
-  }
-  # A wheel is a zip. Tagging it as ISO8859-1 text invites conversion on read;
-  # fdport marks its downloaded artifact binary for the same reason.
-  chtag -b "${_wheel}" 2>/dev/null || true
+# The platform tag in a native wheel's name is not a constant, so it cannot be
+# written literally here. 3.12 and 3.13 report os390_<release>_<model> while
+# 3.14 reports plain "zos", and the model field names the machine that built
+# the wheel rather than anything about this port -- 8561 is a machine type, so
+# a rebuild on different hardware moves the name again.
+#
+# Ask the interpreter what it calls this platform, then fall back to the tags
+# actually in use. Whichever exists is the right one.
+_pc_platform_tags() {
+  _pt_local=$("$(_zopen_python_interpreter_path "$1")" -c \
+    'import sysconfig; print(sysconfig.get_platform().replace("-","_").replace(".","_"))' \
+    2>/dev/null)
+  echo "${_pt_local} zos os390_29_00_8561"
 }
 
-zopen_custom_check() {
-  # Find the wheel we downloaded
-  _wheel=$(ls pydantic_core-*.whl 2>/dev/null | head -1)
-  [ -n "${_wheel}" ] || { printError "No wheel found"; return 1; }
+# Fetch one prebuilt wheel per interpreter, under its native name. Do not fetch
+# a hand-renamed -none-any asset: renaming a wheel leaves the internal WHEEL
+# metadata still declaring the original platform tag, which is malformed per
+# PEP 427, and it does not self-heal because retagging treats a -none-any name
+# carrying a cp3XY python tag as already done. Letting
+# _zopen_python_retag_wheel do it rewrites the filename, the WHEEL metadata and
+# RECORD together.
+zopen_init() {
+  mkdir -p wheels || return 1
+  for _pv in $(_zopen_python_versions); do
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
 
-  # Create a throwaway venv, install the wheel, run smoke tests
-  python3 -m venv .check_venv
-  . .check_venv/bin/activate
+    # already fetched on an earlier run, under whatever tag it carries
+    _have=""
+    for _cand in wheels/pydantic_core-${PYDANTIC_CORE_VERSION}-${_tag}-${_tag}-*.whl; do
+      [ -f "${_cand}" ] && { _have="${_cand}"; break; }
+    done
+    [ -n "${_have}" ] && continue
 
-  # No --no-deps: the wheel declares Requires-Dist: typing-extensions>=4.14.1,
-  # and pydantic_core imports it at module level, so --no-deps made the very
-  # first smoke check fail with "No module named typing_extensions".
-  # typing-extensions is pure Python with no dependencies of its own, so
-  # letting pip resolve it pulls in exactly one small wheel from PyPI.
-  pip install --quiet "${_wheel}"
+    _tried=""
+    _got=""
+    for _plat in $(_pc_platform_tags "${_pv}"); do
+      case " ${_tried} " in *" ${_plat} "*) continue ;; esac
+      _tried="${_tried} ${_plat}"
+      _whl="pydantic_core-${PYDANTIC_CORE_VERSION}-${_tag}-${_tag}-${_plat}.whl"
+      if curl -fsSL -o "wheels/${_whl}" "${WHEEL_BASE_URL}/${_whl}" 2>/dev/null; then
+        printInfo "Fetched ${_whl}"
+        # A wheel is a zip; tagging it as text invites conversion on read.
+        chtag -b "wheels/${_whl}"
+        _got="${_whl}"
+        break
+      fi
+      rm -f "wheels/${_whl}"
+    done
 
-  python3 - <<'PYEOF'
+    if [ -z "${_got}" ]; then
+      printSoftError "No prebuilt wheel for Python ${_pv} at ${WHEEL_BASE_URL}"
+      printSoftError "Tried platform tags:${_tried}"
+      printSoftError "pydantic-core has no abi3 build -- a Rust extension is compiled"
+      printSoftError "against one CPython ABI -- so each interpreter needs its own"
+      printSoftError "cross-compile attached to the v${PYDANTIC_CORE_VERSION} release."
+      return 1
+    fi
+  done
+}
+
+# pydantic_core imports typing_extensions at module level and the interpreters
+# do not bundle it, so an isolated venv cannot import the wheel at all. It is
+# pure Python with no dependencies of its own, so one small wheel from PyPI
+# settles it. --system-site-packages costs nothing here and keeps this port's
+# venvs consistent with cryptographyport's.
+_pc_venv_for() {
+  _cv_dir=$(_zopen_python_venv_dir "$1")
+  if [ ! -f "${_cv_dir}/bin/activate" ]; then
+    printInfo "Creating virtual environment for ${1} in ${_cv_dir} (with system packages)"
+    "$(_zopen_python_interpreter_path "$1")" -m venv --system-site-packages "${_cv_dir}" || return 1
+  fi
+  . "${_cv_dir}/bin/activate" || return 1
+  pip install --disable-pip-version-check --quiet setuptools build installer wheel typing_extensions
+}
+
+# Stands in for compiling. Everything the Python build system would do is still
+# done -- verify the interpreters, create a virtual environment for each, put
+# that interpreter's wheel in dist/, retag -- except the compiling itself. The
+# per-interpreter venv is not optional: the check phase runs in it and fails
+# with "No virtual environment at .venv-3.13" without it.
+zopen_custom_build() {
+  _zopen_python_verify_interpreters || return 1
+
+  rm -rf dist
+  mkdir -p dist || return 1
+
+  for _pv in $(_zopen_python_versions); do
+    _pc_venv_for "${_pv}" || return 1
+    _tag="cp$(echo "${_pv}" | tr -d '.')"
+    # Glob rather than reconstruct the name: zopen_init already resolved which
+    # platform tag exists, and it is not the same for every interpreter.
+    _src=""
+    for _cand in wheels/pydantic_core-${PYDANTIC_CORE_VERSION}-${_tag}-${_tag}-*.whl; do
+      [ -f "${_cand}" ] && { _src="${_cand}"; break; }
+    done
+    if [ -z "${_src}" ]; then
+      printSoftError "No wheel staged for Python ${_pv} in wheels/"
+      deactivate
+      return 1
+    fi
+    cp "${_src}" dist/ || { deactivate; return 1; }
+    printInfo "Staged $(basename "${_src}") for Python ${_pv}"
+    deactivate
+  done
+
+  # Retag to cp3XY-none-any so a wheel is not pinned to the z/OS release and
+  # machine model of the box that produced it. The tag is read from each
+  # wheel's own filename, so the interpreter active here does not matter.
+  _pc_venv_for "$(_zopen_python_primary_version)" || return 1
+  _zopen_python_retag_wheel
+  _rc=$?
+  deactivate
+  return ${_rc}
+}
+
+# Called once per interpreter, with that interpreter's environment active and
+# its wheel already installed. Loading the extension and validating real data
+# is the point: it is the only thing that shows a wheel built off-platform
+# works on this one.
+zopen_python_test() {
+  PYDANTIC_CORE_EXPECTED_VERSION="${PYDANTIC_CORE_VERSION}" python - <<'PYEOF'
+import os
 import sys
+
+failures = 0
+total = 0
+
+
+def check(label, fn):
+    global failures, total
+    total += 1
+    try:
+        if fn():
+            print("PASS:", label)
+        else:
+            print("FAIL:", label, file=sys.stderr)
+            failures += 1
+    except Exception as exc:
+        print("FAIL:", label, "-", exc, file=sys.stderr)
+        failures += 1
+
 
 try:
     import pydantic_core
     from pydantic_core import SchemaValidator, core_schema
 except ImportError as exc:
+    # Report as a failure rather than crashing, so zopen_check_results sees a
+    # count instead of an empty log.
     print("FAIL: import pydantic_core -", exc, file=sys.stderr)
+    print("pydantic_core FAILED to import on Python %s" % sys.version.split()[0])
     sys.exit(1)
 
-failures = 0
+expected = os.environ["PYDANTIC_CORE_EXPECTED_VERSION"]
 
-def check(label, expr):
-    global failures
-    if expr:
-        print("PASS:", label)
-    else:
-        print("FAIL:", label, file=sys.stderr)
-        failures += 1
+# The venv can see the interpreter's own site-packages, so a wheel that failed
+# to install would leave some other pydantic_core importable and every check
+# below would pass against it. Assert we are testing what this port ships.
+check("version is the one this port builds",
+      lambda: pydantic_core.__version__ == expected)
 
 v = SchemaValidator(core_schema.str_schema())
-check("str validate_python", v.validate_python("hello") == "hello")
-check("str validate_json",   v.validate_json('"world"') == "world")
+check("str validate_python", lambda: v.validate_python("hello") == "hello")
+check("str validate_json", lambda: v.validate_json('"world"') == "world")
 
 v2 = SchemaValidator(core_schema.int_schema())
-check("int validate_python", v2.validate_python(42) == 42)
+check("int validate_python", lambda: v2.validate_python(42) == 42)
+check("int coerces from str", lambda: v2.validate_python("42") == 42)
 
-try:
-    v2.validate_python("not-an-int")
-    check("ValidationError raised", False)
-except pydantic_core.ValidationError:
-    check("ValidationError raised", True)
+
+def rejects_bad_int():
+    try:
+        v2.validate_python("not-an-int")
+        return False
+    except pydantic_core.ValidationError:
+        return True
+
+
+check("ValidationError raised", rejects_bad_int)
 
 person = SchemaValidator(core_schema.typed_dict_schema({
     "name": core_schema.typed_dict_field(core_schema.str_schema()),
-    "age":  core_schema.typed_dict_field(core_schema.int_schema()),
+    "age": core_schema.typed_dict_field(core_schema.int_schema()),
 }))
 r = person.validate_python({"name": "z/OS", "age": 1})
-check("typed_dict name", r["name"] == "z/OS")
-check("typed_dict age",  r["age"]  == 1)
+check("typed_dict name", lambda: r["name"] == "z/OS")
+check("typed_dict age", lambda: r["age"] == 1)
 
 print()
 print("pydantic_core %s on Python %s  --  %d passed, %d failed" % (
-    pydantic_core.__version__, sys.version.split()[0], 6 - failures, failures))
-sys.exit(failures)
+    pydantic_core.__version__, sys.version.split()[0], total - failures, failures))
+sys.exit(1 if failures else 0)
 PYEOF
-  _rc=$?
-  deactivate
-  rm -rf .check_venv
-  return ${_rc}
 }
 
-zopen_custom_install() {
-  _wheel=$(ls pydantic_core-*.whl 2>/dev/null | head -1)
-  [ -n "${_wheel}" ] || { printError "No wheel found to install"; return 1; }
+zopen_check_results() {
+  dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
+  # No "|| echo 0": grep -c already prints 0 when nothing matches, and it also
+  # exits 1, so the fallback appended a second zero and the arithmetic below
+  # died with FSUM9224 bad number "0\n0". That fired on every clean run, since
+  # a clean run has no FAIL: lines at all.
+  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null)
+  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null)
+  passed=${passed:-0}
+  failed=${failed:-0}
+  total=$((passed + failed))
 
-  # Install the wheel into the port tree
-  mkdir -p "${ZOPEN_INSTALL_DIR}/lib/python"
-  # No --no-deps here either. zopen-build's Python install path uses it because
-  # it installs only the port's own wheel, but this port has to be usable on its
-  # own: without typing-extensions alongside it, lib/python holds a module that
-  # cannot be imported and zopen_append_to_validate_install below fails.
-  python3 -m pip install --quiet --target="${ZOPEN_INSTALL_DIR}/lib/python" "${_wheel}"
+  # An interpreter whose test produced no lines at all did not pass, it never
+  # ran. Reporting 0/0 as success is how a broken wheel ships.
+  interpreters=$(grep -c "^pydantic_core .* on Python" "${chk}" 2>/dev/null)
+  interpreters=${interpreters:-0}
+  expected=$(echo "${ZOPEN_PYTHON_VERSIONS:-3.12 3.13 3.14}" | wc -w | tr -d ' ')
+  if [ "${interpreters}" -lt "${expected}" ]; then
+    silent=$((expected - interpreters))
+    failed=$((failed + silent))
+    total=$((total + silent))
+  fi
 
-  # Stage the wheel for the zopen wheel index, in the port's artifact directory
-  # next to the pax and metadata.json -- which is where CI looks
-  # (install/dist/*.whl). It must NOT go under ZOPEN_INSTALL_DIR: that tree is
-  # what gets packaged, so a wheel there ships a second copy of everything
-  # already under lib/python and is invisible to CI, which is what
-  # zopen-build's own _zopen_python_install warns about.
-  mkdir -p "${ZOPEN_ROOT}/install/dist"
-  cp "${_wheel}" "${ZOPEN_ROOT}/install/dist/"
+  echo "actualFailures:${failed}"
+  echo "totalTests:${total}"
+  echo "expectedFailures:0"
+}
 
-  printInfo "Installed pydantic_core ${PYDANTIC_CORE_VERSION} from ${_wheel}"
+# The wheels record the extension executable, but pip is not the only thing
+# that puts it in place: zopen packages ZOPEN_INSTALL_DIR into the pax. Make
+# sure the bit survives that, or the module fails to HFS-load with
+# CEE3512S ... reason code EF076015, which reads like a missing symbol.
+zopen_post_install() {
+  for _so in "${ZOPEN_INSTALL_DIR}"/lib/python/pydantic_core/*.so; do
+    [ -f "${_so}" ] && chmod +x "${_so}"
+  done
+  return 0
 }
 
 # Without ZOPEN_BUILD_SYSTEM="Python" nothing adds lib/python to PYTHONPATH --
@@ -173,20 +299,4 @@ ZZ
 
 zopen_append_to_validate_install() {
   echo "python3 -c \"import pydantic_core; print('pydantic_core', pydantic_core.__version__)\""
-}
-
-zopen_check_results() {
-  dir="$1"; pfx="$2"; chk="${dir}/${pfx}_check.log"
-  # No "|| echo 0": grep -c already prints 0 when nothing matches, and it also
-  # exits 1, so the fallback appended a second zero and the arithmetic below
-  # died with FSUM9224 bad number "0\n0". That fired on every clean run, since
-  # a clean run has no FAIL: lines at all.
-  passed=$(grep -c "^PASS:" "${chk}" 2>/dev/null)
-  failed=$(grep -c "^FAIL:" "${chk}" 2>/dev/null)
-  passed=${passed:-0}
-  failed=${failed:-0}
-  total=$((passed + failed))
-  echo "actualFailures:${failed}"
-  echo "totalTests:${total}"
-  echo "expectedFailures:0"
 }
