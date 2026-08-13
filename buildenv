@@ -24,6 +24,12 @@ PYDANTIC_CORE_VERSION="2.41.5"
 ###
 
 export ZOPEN_PROJECT_NAME="pydantic-core"
+# BARE has no source directory to take a name from, so zopen-build falls back to
+# the directory holding this buildenv -- "pydantic-coreport" -- and never appends the
+# version, because only GIT and LOCAL do that. The pax and the installed
+# version directory then come out as "pydantic-coreport" instead of "pydantic-core-<version>".
+# fdport, the reference BARE port, sets this for the same reason.
+export ZOPEN_NAME="pydantic-core-${PYDANTIC_CORE_VERSION}"
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_TYPE="BARE"
 # ZOPEN_TYPE alone does not hold. For a named build line zopen-build overwrites
