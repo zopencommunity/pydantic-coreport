@@ -283,6 +283,21 @@ zopen_post_install() {
   for _so in "${ZOPEN_INSTALL_DIR}"/lib/python/pydantic_core/*.so; do
     [ -f "${_so}" ] && chmod +x "${_so}"
   done
+
+  # pydantic_core imports typing_extensions at module level, and nothing else
+  # puts it in the package tree: zopen-build installs the wheel with --no-deps,
+  # which is right in general -- zopen wants dependencies declared as ports --
+  # but there is no typing_extensions port, and the interpreters do not bundle
+  # it. Without this the pax installs a module that cannot be imported.
+  #
+  # It is pure Python with no dependencies of its own, so this is one small
+  # wheel and it works on every interpreter from the same directory.
+  if [ ! -d "${ZOPEN_INSTALL_DIR}/lib/python/typing_extensions" ] \
+     && [ ! -f "${ZOPEN_INSTALL_DIR}/lib/python/typing_extensions.py" ]; then
+    printInfo "Adding typing_extensions to the package tree"
+    python3 -m pip install --disable-pip-version-check --quiet \
+      --target="${ZOPEN_INSTALL_DIR}/lib/python" typing_extensions || return 1
+  fi
   return 0
 }
 
