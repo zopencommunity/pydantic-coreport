@@ -26,6 +26,18 @@ PYDANTIC_CORE_VERSION="2.41.5"
 export ZOPEN_PROJECT_NAME="pydantic-core"
 export ZOPEN_BUILD_LINE="STABLE"
 export ZOPEN_TYPE="BARE"
+# ZOPEN_TYPE alone does not hold. For a named build line zopen-build overwrites
+# it: with no ZOPEN_STABLE_TYPE it infers the type from ZOPEN_STABLE_URL, and a
+# URL ending in .git becomes GIT. This port has therefore been cloning pydantic/pydantic-core
+# every build despite declaring itself BARE.
+#
+# Nothing broke here only because pydantic-core keeps its package under python/. A repo
+# with its package at the root shadows the installed wheel during the check,
+# because zopen_python_test feeds its script to python on stdin and python puts
+# the working directory first on sys.path -- that is exactly what happened to
+# watchfilesport, and it presented as a broken wheel.
+export ZOPEN_STABLE_TYPE="BARE"
+export ZOPEN_DEV_TYPE="BARE"
 # Required even though nothing is fetched from it. checkEnv exempts only
 # ZOPEN_TYPE=LOCAL from needing a URL, so a BARE port without one fails with
 # "Building from stable, but ZOPEN_STABLE_URL not specified" before it does
@@ -176,6 +188,13 @@ zopen_python_test() {
   PYDANTIC_CORE_EXPECTED_VERSION="${PYDANTIC_CORE_VERSION}" python - <<'PYEOF'
 import os
 import sys
+
+# The check exists to exercise the *installed* wheel, so the working directory
+# has no business being importable. python reads this script from stdin and so
+# puts "" first on sys.path; if a source tree with this package at its root
+# ever sits beside the build, the import silently resolves there instead and
+# fails as though the wheel had no extension.
+sys.path = [p for p in sys.path if p not in ("", ".")]
 
 failures = 0
 total = 0
