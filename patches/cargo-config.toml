@@ -1,0 +1,23 @@
+[target.s390x-ibm-zos]
+linker = "s390x-ibm-zos-cc"
+rustflags = [
+  "-C", "target-feature=-vector",
+  "-L", "/tmp/pydc-host/debug/deps",
+  "--extern", "serde_derive=/tmp/libserde_derive_pydc.so",
+  "--extern", "strum_macros=/tmp/libstrum_macros_pydc.so",
+  "--extern", "pyo3_macros=/tmp/libpyo3_macros_pydc.so",
+  "--extern", "yoke_derive=/tmp/libyoke_derive_pydc.so",
+  "--extern", "zerofrom_derive=/tmp/libzerofrom_derive_pydc.so",
+  "--extern", "zerovec_derive=/tmp/libzerovec_derive_pydc.so",
+  "--extern", "enum_dispatch=/tmp/libenum_dispatch_pydc.so",
+  "--extern", "displaydoc=/tmp/libdisplaydoc_pydc.so",
+  "-C", "link-arg=/usr/lpp/IBM/cyp/v3r12/pyz/lib/libpython3.12.x",
+]
+
+[profile.zos]
+inherits = "release"
+opt-level = "z"
+debug = 0
+codegen-units = 1
+lto = false
+strip = true

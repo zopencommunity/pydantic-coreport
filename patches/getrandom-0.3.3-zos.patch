@@ -1,0 +1,36 @@
+diff -uNr /tmp/gr-clean/Cargo.toml /tmp/gr-patched/Cargo.toml
+--- /tmp/gr-clean/Cargo.toml	1969-12-31 19:00:01.000000000 -0500
++++ /tmp/gr-patched/Cargo.toml	2026-08-16 10:43:45.272066244 -0400
+@@ -109,7 +109,7 @@
+ version = "0.2.154"
+ default-features = false
+ 
+-[target.'cfg(any(target_os = "haiku", target_os = "redox", target_os = "nto", target_os = "aix"))'.dependencies.libc]
++[target.'cfg(any(target_os = "haiku", any(target_os = "redox", target_os = "zos"), target_os = "nto", target_os = "aix"))'.dependencies.libc]
+ version = "0.2.154"
+ default-features = false
+ 
+diff -uNr /tmp/gr-clean/src/backends.rs /tmp/gr-patched/src/backends.rs
+--- /tmp/gr-clean/src/backends.rs	2006-07-23 21:21:28.000000000 -0400
++++ /tmp/gr-patched/src/backends.rs	2026-08-16 10:43:45.268000842 -0400
+@@ -48,7 +48,7 @@
+         target_os = "haiku",
+         target_os = "redox",
+         target_os = "nto",
+-        target_os = "aix",
++        target_os = "aix", target_os = "zos",
+     ))] {
+         mod use_file;
+         pub use use_file::*;
+diff -uNr /tmp/gr-clean/src/util_libc.rs /tmp/gr-patched/src/util_libc.rs
+--- /tmp/gr-clean/src/util_libc.rs	2006-07-23 21:21:28.000000000 -0400
++++ /tmp/gr-patched/src/util_libc.rs	2026-08-16 10:47:12.663429204 -0400
+@@ -2,7 +2,7 @@
+ use core::mem::MaybeUninit;
+ 
+ cfg_if! {
+-    if #[cfg(any(target_os = "netbsd", target_os = "openbsd", target_os = "android", target_os = "cygwin"))] {
++    if #[cfg(any(target_os = "netbsd", target_os = "openbsd", target_os = "android", target_os = "cygwin", target_os = "zos"))] {
+         use libc::__errno as errno_location;
+     } else if #[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
+         use libc::__errno_location as errno_location;
